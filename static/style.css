@@ -1,0 +1,169 @@
+/* ─── Layout ────────────────────────────────────────────────────────────── */
+html, body { height: 100%; overflow: hidden; }
+.container-fluid { height: calc(100vh - 56px); }
+.row { height: 100%; }
+
+/* ─── Sidebar ───────────────────────────────────────────────────────────── */
+.sidebar {
+  background: #f8f9fa;
+  border-right: 1px solid #dee2e6;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.user-list {
+  flex: 1 1 auto;
+  max-height: 45vh;
+}
+
+.ou-tree {
+  max-height: 30vh;
+}
+
+/* ─── User list items ───────────────────────────────────────────────────── */
+.user-item {
+  padding: .6rem 1rem;
+  cursor: pointer;
+  border-bottom: 1px solid #e9ecef;
+  transition: background .15s;
+}
+.user-item:hover  { background: #e9ecef; }
+.user-item.active { background: #0d6efd; color: #fff; }
+.user-item.active .text-muted { color: rgba(255,255,255,.75) !important; }
+
+.user-item .badge-status {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  margin-right: 6px;
+}
+.badge-enabled  { background: #198754; }
+.badge-disabled { background: #dc3545; }
+
+/* ─── OU Tree ───────────────────────────────────────────────────────────── */
+.ou-item {
+  font-size: .8rem;
+  padding: .25rem .5rem;
+  cursor: pointer;
+  border-radius: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ou-item:hover { background: #e9ecef; }
+.ou-item.active { background: #cfe2ff; font-weight: 600; }
+
+/* ─── Detail panel ──────────────────────────────────────────────────────── */
+#detail-panel { overflow-y: auto; height: 100%; }
+
+.user-header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.user-avatar {
+  width: 64px; height: 64px;
+  border-radius: 50%;
+  background: #0d6efd;
+  color: #fff;
+  font-size: 1.8rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.info-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: .75rem;
+}
+
+.info-card {
+  background: #f8f9fa;
+  border: 1px solid #dee2e6;
+  border-radius: 8px;
+  padding: .75rem 1rem;
+}
+.info-card .label {
+  font-size: .7rem;
+  text-transform: uppercase;
+  color: #6c757d;
+  font-weight: 600;
+  letter-spacing: .05em;
+}
+.info-card .value {
+  font-size: .95rem;
+  word-break: break-all;
+}
+
+/* ─── Hours grid ────────────────────────────────────────────────────────── */
+.hours-grid th, .hours-grid td {
+  width: 2.2rem;
+  min-width: 2.2rem;
+  height: 2rem;
+  text-align: center;
+  vertical-align: middle;
+  padding: 0;
+  font-size: .72rem;
+  cursor: pointer;
+  user-select: none;
+}
+
+.hours-grid th.day-header {
+  width: 3.5rem;
+  min-width: 3.5rem;
+  cursor: default;
+  font-weight: 600;
+  background: #f8f9fa;
+}
+
+.hours-grid .hour-header {
+  font-size: .65rem;
+  color: #6c757d;
+  cursor: default;
+  background: #f8f9fa;
+}
+
+.hours-grid td.allowed {
+  background: #198754;
+  color: #fff;
+}
+.hours-grid td.denied {
+  background: #f8d7da;
+  color: #842029;
+}
+.hours-grid td.allowed:hover { background: #157347; }
+.hours-grid td.denied:hover  { background: #f1aeb5; }
+
+/* ─── Status badges ─────────────────────────────────────────────────────── */
+.status-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .5rem;
+  margin-bottom: 1rem;
+}
+
+/* ─── Loading spinner ───────────────────────────────────────────────────── */
+.spinner-overlay {
+  position: absolute; inset: 0;
+  background: rgba(255,255,255,.7);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 10;
+}
+
+/* ─── Section headings ──────────────────────────────────────────────────── */
+.section-heading {
+  font-size: .75rem;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: #6c757d;
+  font-weight: 700;
+  border-bottom: 1px solid #dee2e6;
+  padding-bottom: .3rem;
+  margin-bottom: .75rem;
+}
