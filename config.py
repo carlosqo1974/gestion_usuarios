@@ -15,12 +15,17 @@ AD_START_TLS = os.getenv("AD_START_TLS", "true").lower() == "true"
 AD_PORT     = int(os.getenv("AD_PORT", 636 if AD_USE_SSL else 389))
 
 # TLS/LDAPS hardening
-AD_TLS_VALIDATE = os.getenv("AD_TLS_VALIDATE", "required").lower()
+AD_TLS_VALIDATE = os.getenv("AD_TLS_VALIDATE", "required").strip().lower()
 AD_CA_CERT_FILE = os.getenv("AD_CA_CERT_FILE", "")
 AD_TLS_VERSION = os.getenv("AD_TLS_VERSION", "TLSv1_2")
 AD_REQUIRE_SECURE_PASSWORD_OPS = os.getenv("AD_REQUIRE_SECURE_PASSWORD_OPS", "true").lower() == "true"
 
-TLS_VALIDATE_MODE = ssl.CERT_REQUIRED if AD_TLS_VALIDATE == "required" else ssl.CERT_NONE
+TLS_VALIDATE_MAP = {
+    "required": ssl.CERT_REQUIRED,
+    "none": ssl.CERT_NONE,
+    "optional": ssl.CERT_OPTIONAL,
+}
+TLS_VALIDATE_MODE = TLS_VALIDATE_MAP.get(AD_TLS_VALIDATE, ssl.CERT_REQUIRED)
 TLS_VERSION_MAP = {
     "TLSv1_2": ssl.PROTOCOL_TLSv1_2,
     "TLSv1": ssl.PROTOCOL_TLSv1,

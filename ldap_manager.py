@@ -146,6 +146,22 @@ class ADManager:
     def _is_secure_connection(self, conn: Connection) -> bool:
         return bool(conn.server.ssl or getattr(conn, "tls_started", False))
 
+    def _friendly_ldap_error(self, exc: Exception) -> str:
+        msg = str(exc)
+        cert_error_hints = (
+            "CERTIFICATE_VERIFY_FAILED",
+            "unable to get local issuer certificate",
+            "self signed certificate",
+        )
+        if any(h in msg for h in cert_error_hints):
+            return (
+                f"{msg}. Verifica la cadena de certificados del DC. "
+                "Opciones: configurar AD_CA_CERT_FILE con la CA corporativa, "
+                "instalar la CA en el trust store del sistema, o (solo temporalmente) "
+                "usar AD_TLS_VALIDATE=none."
+            )
+        return msg
+
     # ------------------------------------------------------------------
     def connect(self) -> tuple[bool, str]:
         log.debug("Conectando al AD: server=%s  port=%s  ssl=%s  bind_dn=%s",
@@ -164,7 +180,7 @@ class ADManager:
             return True, "Conexión establecida"
         except LDAPException as exc:
             log.error("Error al conectar con el AD: %s", exc)
-            return False, str(exc)
+            return False, self._friendly_ldap_error(exc)
 
     @property
     def conn(self) -> Connection:
@@ -227,7 +243,7 @@ class ADManager:
                 bind_ok = True
                 break
             except LDAPException as exc:
-                log.warning("Paso 1: formato '%s' rechazado — %s", bind_user, exc)
+                log.warning("Paso 1: formato '%s' rechazado — %s", bind_user, self._friendly_ldap_error(exc))
                 last_exc = exc
 
         if not bind_ok:
