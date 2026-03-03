@@ -214,13 +214,13 @@ class ADManager:
 
     # ------------------------------------------------------------------
     def authenticate_user(
-        self, username: str, password: str, required_group: str
+        self, username: str, password: str, required_groups: list[str]
     ) -> tuple[bool, str, dict | None]:
         """
-        Verifica credenciales contra AD y comprueba membresía en required_group.
+        Verifica credenciales contra AD y comprueba membresía en al menos uno de required_groups.
         Devuelve (ok, mensaje, user_info | None).
         """
-        log.info("Intento de autenticación — usuario: %s  grupo_requerido: %s", username, required_group)
+        log.info("Intento de autenticación — usuario: %s  grupos_requeridos: %s", username, required_groups)
 
         # 1. Intentar bind con las credenciales del usuario
         # Probamos UPN (usuario@dominio) primero, luego NetBIOS (DOMINIO\usuario)
@@ -289,14 +289,16 @@ class ADManager:
         log.debug("Paso 3: grupos del usuario %s: %s", username,
                   [str(g) for g in member_of] if member_of else "(ninguno)")
 
-        in_group = any(
-            str(g).lower().startswith(f"cn={required_group.lower()},")
-            for g in member_of
+        required_groups = [g for g in required_groups if g]
+        in_allowed_group = any(
+            any(str(g).lower().startswith(f"cn={required.lower()},") for g in member_of)
+            for required in required_groups
         )
-        if not in_group:
-            log.warning("Paso 3 FALLO — %s no pertenece al grupo '%s'. Grupos actuales: %s",
-                        username, required_group, [str(g) for g in member_of])
-            return False, f"Acceso denegado: se requiere pertenecer al grupo {required_group}", None
+        if not in_allowed_group:
+            log.warning("Paso 3 FALLO — %s no pertenece a los grupos permitidos %s. Grupos actuales: %s",
+                        username, required_groups, [str(g) for g in member_of])
+            grupos_txt = ", ".join(required_groups) if required_groups else "(sin grupos configurados)"
+            return False, f"Acceso denegado: se requiere pertenecer a uno de estos grupos: {grupos_txt}", None
 
         user_info = {
             "username": username,

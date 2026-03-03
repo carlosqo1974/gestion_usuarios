@@ -60,7 +60,7 @@ def login():
         else:
             log.info("LOGIN intento — usuario=%s  IP=%s", username, ip)
             ok, msg, user_info = ad.authenticate_user(
-                username, password, config.ADMIN_GROUP
+                username, password, config.ADMIN_GROUPS
             )
             if ok:
                 session["user"] = user_info
@@ -71,7 +71,7 @@ def login():
                 log.warning("LOGIN FALLO — usuario=%s  IP=%s  motivo=%s", username, ip, msg)
                 error = msg
 
-    return render_template("login.html", error=error, admin_group=config.ADMIN_GROUP)
+    return render_template("login.html", error=error, admin_groups=config.ADMIN_GROUPS)
 
 
 @app.route("/logout")

@@ -50,8 +50,8 @@ AD_AUTH_BASE = os.getenv("AD_AUTH_BASE") or _domain_root(AD_BASE_DN)
 # Timezone offset from UTC for logonHours display (hours)
 TIMEZONE_OFFSET = int(os.getenv("TIMEZONE_OFFSET", 0))
 
-# Grupo AD requerido para acceder a la aplicación
-ADMIN_GROUP = os.getenv("ADMIN_GROUP", "GWINSuper")
+# Grupos AD permitidos para acceder a la aplicación (CN del grupo)
+ADMIN_GROUPS = [g.strip() for g in os.getenv("ADMIN_GROUPS", "GWINSuper,Administradores").split(",") if g.strip()]
 
 # Flask
 SECRET_KEY = os.getenv("SECRET_KEY", "change-this-secret-key")
