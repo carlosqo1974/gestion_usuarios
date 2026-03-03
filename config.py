@@ -19,6 +19,7 @@ AD_TLS_VALIDATE = os.getenv("AD_TLS_VALIDATE", "required").strip().lower()
 AD_CA_CERT_FILE = os.getenv("AD_CA_CERT_FILE", "")
 AD_TLS_VERSION = os.getenv("AD_TLS_VERSION", "TLSv1_2")
 AD_REQUIRE_SECURE_PASSWORD_OPS = os.getenv("AD_REQUIRE_SECURE_PASSWORD_OPS", "true").lower() == "true"
+AD_TLS_VALID_NAMES = [n.strip() for n in os.getenv("AD_TLS_VALID_NAMES", "").split(",") if n.strip()]
 
 TLS_VALIDATE_MAP = {
     "required": ssl.CERT_REQUIRED,

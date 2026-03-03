@@ -134,6 +134,7 @@ class ADManager:
             validate=config.TLS_VALIDATE_MODE,
             ca_certs_file=config.AD_CA_CERT_FILE or None,
             version=config.TLS_VERSION,
+            valid_names=config.AD_TLS_VALID_NAMES or None,
         )
         return Server(
             config.AD_SERVER,
@@ -159,6 +160,12 @@ class ADManager:
                 "Opciones: configurar AD_CA_CERT_FILE con la CA corporativa, "
                 "instalar la CA en el trust store del sistema, o (solo temporalmente) "
                 "usar AD_TLS_VALIDATE=none."
+            )
+        if "doesn't match any name in" in msg:
+            return (
+                f"{msg}. El certificado del DC es válido pero el nombre no coincide. "
+                "Usa AD_SERVER con FQDN del DC (ej. DC01.contact.com) en lugar de IP, "
+                "o configura AD_TLS_VALID_NAMES con el/los nombres DNS permitidos del certificado."
             )
         return msg
 
