@@ -1,16 +1,38 @@
 import os
+import ssl
 from dotenv import load_dotenv
 
 load_dotenv()
 
 # Active Directory connection
-AD_SERVER   = os.getenv("AD_SERVER", "ldap://your-dc.domain.local")
+AD_SERVER   = os.getenv("AD_SERVER", "your-dc.domain.local")
 AD_DOMAIN   = os.getenv("AD_DOMAIN", "DOMAIN")
 AD_BASE_DN  = os.getenv("AD_BASE_DN", "DC=domain,DC=local")
 AD_BIND_DN  = os.getenv("AD_BIND_DN", "CN=admin,CN=Users,DC=domain,DC=local")
 AD_PASSWORD = os.getenv("AD_PASSWORD", "")
 AD_USE_SSL  = os.getenv("AD_USE_SSL", "false").lower() == "true"
+AD_START_TLS = os.getenv("AD_START_TLS", "true").lower() == "true"
 AD_PORT     = int(os.getenv("AD_PORT", 636 if AD_USE_SSL else 389))
+
+# TLS/LDAPS hardening
+AD_TLS_VALIDATE = os.getenv("AD_TLS_VALIDATE", "required").lower()
+AD_CA_CERT_FILE = os.getenv("AD_CA_CERT_FILE", "")
+AD_TLS_VERSION = os.getenv("AD_TLS_VERSION", "TLSv1_2")
+AD_REQUIRE_SECURE_PASSWORD_OPS = os.getenv("AD_REQUIRE_SECURE_PASSWORD_OPS", "true").lower() == "true"
+
+TLS_VALIDATE_MODE = ssl.CERT_REQUIRED if AD_TLS_VALIDATE == "required" else ssl.CERT_NONE
+TLS_VERSION_MAP = {
+    "TLSv1_2": ssl.PROTOCOL_TLSv1_2,
+    "TLSv1": ssl.PROTOCOL_TLSv1,
+    "TLS": ssl.PROTOCOL_TLS,
+}
+TLS_VERSION = TLS_VERSION_MAP.get(AD_TLS_VERSION, ssl.PROTOCOL_TLSv1_2)
+
+# Permite AD_SERVER con o sin esquema
+for prefix in ("ldap://", "ldaps://"):
+    if AD_SERVER.lower().startswith(prefix):
+        AD_SERVER = AD_SERVER[len(prefix):]
+        break
 
 # Base para buscar al usuario que hace LOGIN (todo el dominio por defecto).
 # Si no se define, se extraen automáticamente los DC= de AD_BASE_DN.

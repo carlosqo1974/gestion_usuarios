@@ -7,7 +7,7 @@ import struct
 from datetime import datetime, timezone, timedelta
 from ldap3 import (
     Server, Connection, ALL, NTLM, SUBTREE, MODIFY_REPLACE,
-    MODIFY_DELETE, MODIFY_ADD
+    MODIFY_DELETE, MODIFY_ADD, Tls, AUTO_BIND_TLS_BEFORE_BIND
 )
 from ldap3.core.exceptions import LDAPException
 import config
@@ -129,23 +129,37 @@ class ADManager:
     def __init__(self):
         self._conn: Connection | None = None
 
+    def _build_server(self) -> Server:
+        tls_config = Tls(
+            validate=config.TLS_VALIDATE_MODE,
+            ca_certs_file=config.AD_CA_CERT_FILE or None,
+            version=config.TLS_VERSION,
+        )
+        return Server(
+            config.AD_SERVER,
+            port=config.AD_PORT,
+            use_ssl=config.AD_USE_SSL,
+            tls=tls_config,
+            get_info=ALL,
+        )
+
+    def _is_secure_connection(self, conn: Connection) -> bool:
+        return bool(conn.server.ssl or getattr(conn, "tls_started", False))
+
     # ------------------------------------------------------------------
     def connect(self) -> tuple[bool, str]:
         log.debug("Conectando al AD: server=%s  port=%s  ssl=%s  bind_dn=%s",
                   config.AD_SERVER, config.AD_PORT, config.AD_USE_SSL, config.AD_BIND_DN)
         try:
-            server = Server(
-                config.AD_SERVER,
-                port=config.AD_PORT,
-                use_ssl=config.AD_USE_SSL,
-                get_info=ALL,
-            )
+            server = self._build_server()
             self._conn = Connection(
                 server,
                 user=config.AD_BIND_DN,
                 password=config.AD_PASSWORD,
-                auto_bind=True,
+                auto_bind=AUTO_BIND_TLS_BEFORE_BIND if (not config.AD_USE_SSL and config.AD_START_TLS) else True,
             )
+            if config.AD_START_TLS and not config.AD_USE_SSL and not self._conn.tls_started:
+                self._conn.start_tls()
             log.info("Conexión admin establecida con %s", config.AD_SERVER)
             return True, "Conexión establecida"
         except LDAPException as exc:
@@ -192,12 +206,7 @@ class ADManager:
             f"{config.AD_DOMAIN}\\{username}",
         ]
 
-        server = Server(
-            config.AD_SERVER,
-            port=config.AD_PORT,
-            use_ssl=config.AD_USE_SSL,
-            get_info=ALL,
-        )
+        server = self._build_server()
 
         bind_ok = False
         last_exc = None
@@ -205,7 +214,14 @@ class ADManager:
             log.debug("Paso 1: probando bind — %s  servidor: %s:%s  ssl=%s",
                       bind_user, config.AD_SERVER, config.AD_PORT, config.AD_USE_SSL)
             try:
-                user_conn = Connection(server, user=bind_user, password=password, auto_bind=True)
+                user_conn = Connection(
+                    server,
+                    user=bind_user,
+                    password=password,
+                    auto_bind=AUTO_BIND_TLS_BEFORE_BIND if (not config.AD_USE_SSL and config.AD_START_TLS) else True,
+                )
+                if config.AD_START_TLS and not config.AD_USE_SSL and not user_conn.tls_started:
+                    user_conn.start_tls()
                 user_conn.unbind()
                 log.debug("Paso 1: bind correcto con formato '%s'", bind_user)
                 bind_ok = True
@@ -324,6 +340,12 @@ class ADManager:
         """Cambia la contraseña de un usuario (requiere privilegios admin).
         must_change=True pone pwdLastSet=0 para forzar cambio en el próximo logon.
         """
+        if config.AD_REQUIRE_SECURE_PASSWORD_OPS and not self._is_secure_connection(self.conn):
+            return False, (
+                "Operación rechazada: el cambio de contraseña requiere LDAPS o StartTLS "
+                "(AD_USE_SSL=true o AD_START_TLS=true)."
+            )
+
         encoded = f'"{new_password}"'.encode("utf-16-le")
         changes = {"unicodePwd": [(MODIFY_REPLACE, [encoded])]}
         if must_change:
