@@ -46,19 +46,14 @@ def _user_has_group(user: dict, group_cn: str) -> bool:
 
 
 def _compute_permissions(user: dict) -> dict:
-    is_access_manager = _user_has_group(user, config.ACCESS_MANAGER_GROUP)
-    in_supervisores = _user_has_group(user, config.PROFILE_GROUPS["supervisores"])
-    in_gtr = _user_has_group(user, config.PROFILE_GROUPS["gtr"])
-
-    can_change_password = in_supervisores or in_gtr or is_access_manager
-    can_reset_account = in_supervisores or in_gtr or is_access_manager
-    can_change_hours = in_gtr or is_access_manager
+    in_admin = _user_has_group(user, config.GROUP_ADMINISTRADORES)
+    in_gtr = _user_has_group(user, config.GROUP_GTR)
+    in_super = _user_has_group(user, config.GROUP_SUPER)
 
     return {
-        "is_access_manager": is_access_manager,
-        "can_change_password": can_change_password,
-        "can_reset_account": can_reset_account,
-        "can_change_hours": can_change_hours,
+        "can_change_password": in_admin or in_gtr or in_super,
+        "can_reset_account": in_admin or in_gtr or in_super,
+        "can_change_hours": in_admin or in_gtr,
     }
 
 
@@ -126,7 +121,7 @@ def logout():
 @app.route("/")
 @login_required
 def index():
-    return render_template("index.html", user=session["user"], profile_groups=config.PROFILE_GROUPS)
+    return render_template("index.html", user=session["user"])
 
 
 # ---------------------------------------------------------------------------
@@ -285,67 +280,6 @@ def api_unlock():
         audit("DESBLOQUEAR_CUENTA", dn, False, str(exc))
         return jsonify({"ok": False, "error": str(exc)}), 500
 
-
-# ---------------------------------------------------------------------------
-# API: Gestión de acceso por perfiles (solo Administradores)
-# ---------------------------------------------------------------------------
-@app.route("/api/access/profiles", methods=["GET"])
-@login_required
-@require_permission("is_access_manager")
-def api_access_profiles():
-    payload = {}
-    for profile, group_cn in config.PROFILE_GROUPS.items():
-        ok, data = ad.list_group_members(group_cn)
-        if not ok:
-            return jsonify({"ok": False, "error": str(data)}), 500
-        payload[profile] = {"group": group_cn, "members": data}
-    return jsonify({"ok": True, "profiles": payload})
-
-
-@app.route("/api/access/profiles/assign", methods=["POST"])
-@login_required
-@require_permission("is_access_manager")
-def api_access_assign():
-    data = request.get_json(force=True)
-    profile = (data.get("profile") or "").strip().lower()
-    sam = (data.get("sam") or "").strip()
-    if profile not in config.PROFILE_GROUPS:
-        return jsonify({"ok": False, "error": "Perfil inválido"}), 400
-    if not sam:
-        return jsonify({"ok": False, "error": "Falta sAMAccountName"}), 400
-
-    user_dn = ad.get_user_dn_by_sam(sam)
-    if not user_dn:
-        return jsonify({"ok": False, "error": f"Usuario no encontrado: {sam}"}), 404
-
-    group_cn = config.PROFILE_GROUPS[profile]
-    ok, msg = ad.add_user_to_group(user_dn, group_cn)
-    audit("PERFIL_ASIGNADO", user_dn, ok, f"perfil={profile} grupo={group_cn} msg={msg}")
-    status = 200 if ok else 500
-    return jsonify({"ok": ok, "message": msg}), status
-
-
-@app.route("/api/access/profiles/remove", methods=["POST"])
-@login_required
-@require_permission("is_access_manager")
-def api_access_remove():
-    data = request.get_json(force=True)
-    profile = (data.get("profile") or "").strip().lower()
-    sam = (data.get("sam") or "").strip()
-    if profile not in config.PROFILE_GROUPS:
-        return jsonify({"ok": False, "error": "Perfil inválido"}), 400
-    if not sam:
-        return jsonify({"ok": False, "error": "Falta sAMAccountName"}), 400
-
-    user_dn = ad.get_user_dn_by_sam(sam)
-    if not user_dn:
-        return jsonify({"ok": False, "error": f"Usuario no encontrado: {sam}"}), 404
-
-    group_cn = config.PROFILE_GROUPS[profile]
-    ok, msg = ad.remove_user_from_group(user_dn, group_cn)
-    audit("PERFIL_REMOVIDO", user_dn, ok, f"perfil={profile} grupo={group_cn} msg={msg}")
-    status = 200 if ok else 500
-    return jsonify({"ok": ok, "message": msg}), status
 
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":

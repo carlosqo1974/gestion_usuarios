@@ -513,7 +513,7 @@ class ADManager:
     def add_user_to_group(self, user_dn: str, group_cn: str) -> tuple[bool, str]:
         group_dn = self.get_group_dn_by_cn(group_cn)
         if not group_dn:
-            return False, f"Grupo no encontrado en AD: {group_cn}. Revisa PROFILE_GROUP_SUPERVISORES/PROFILE_GROUP_GTR en .env"
+            return False, f"Grupo no encontrado en AD: {group_cn}. Verifica el nombre del grupo en la configuración"
         try:
             ok = self.conn.modify(group_dn, {"member": [(MODIFY_ADD, [user_dn])]})
             if ok:
@@ -528,7 +528,7 @@ class ADManager:
     def remove_user_from_group(self, user_dn: str, group_cn: str) -> tuple[bool, str]:
         group_dn = self.get_group_dn_by_cn(group_cn)
         if not group_dn:
-            return False, f"Grupo no encontrado en AD: {group_cn}. Revisa PROFILE_GROUP_SUPERVISORES/PROFILE_GROUP_GTR en .env"
+            return False, f"Grupo no encontrado en AD: {group_cn}. Verifica el nombre del grupo en la configuración"
         try:
             ok = self.conn.modify(group_dn, {"member": [(MODIFY_DELETE, [user_dn])]})
             if ok:
@@ -543,10 +543,10 @@ class ADManager:
     def list_group_members(self, group_cn: str) -> tuple[bool, list[dict] | str]:
         group_dn = self.get_group_dn_by_cn(group_cn)
         if not group_dn:
-            return False, f"Grupo no encontrado en AD: {group_cn}. Revisa PROFILE_GROUP_SUPERVISORES/PROFILE_GROUP_GTR en .env"
+            return False, f"Grupo no encontrado en AD: {group_cn}. Verifica el nombre del grupo en la configuración"
         self.conn.search(group_dn, "(objectClass=group)", attributes=["member"])
         if not self.conn.entries:
-            return False, f"Grupo no encontrado en AD: {group_cn}. Revisa PROFILE_GROUP_SUPERVISORES/PROFILE_GROUP_GTR en .env"
+            return False, f"Grupo no encontrado en AD: {group_cn}. Verifica el nombre del grupo en la configuración"
         members = self.conn.entries[0].member.values if self.conn.entries[0].member else []
         out = []
         for member_dn in members:

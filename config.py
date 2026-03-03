@@ -50,17 +50,11 @@ AD_AUTH_BASE = os.getenv("AD_AUTH_BASE") or _domain_root(AD_BASE_DN)
 # Timezone offset from UTC for logonHours display (hours)
 TIMEZONE_OFFSET = int(os.getenv("TIMEZONE_OFFSET", 0))
 
-# Grupos AD permitidos para acceder a la aplicación (CN del grupo)
-ADMIN_GROUPS = [g.strip() for g in os.getenv("ADMIN_GROUPS", "GWINSuper,Administradores").split(",") if g.strip()]
-
-# Gestión de acceso por perfiles
-ACCESS_MANAGER_GROUP = os.getenv("ACCESS_MANAGER_GROUP", "Administradores").strip()
-PROFILE_GROUP_SUPERVISORES = os.getenv("PROFILE_GROUP_SUPERVISORES", "Supervisores").strip()
-PROFILE_GROUP_GTR = os.getenv("PROFILE_GROUP_GTR", "GTR").strip()
-PROFILE_GROUPS = {
-    "supervisores": PROFILE_GROUP_SUPERVISORES,
-    "gtr": PROFILE_GROUP_GTR,
-}
+# Grupos AD para acceso y permisos de operación (CN del grupo)
+GROUP_ADMINISTRADORES = os.getenv("GROUP_ADMINISTRADORES", "Administradores").strip()
+GROUP_GTR = os.getenv("GROUP_GTR", "GGWinGTR").strip()
+GROUP_SUPER = os.getenv("GROUP_SUPER", "GWINSuper").strip()
+ADMIN_GROUPS = [g.strip() for g in os.getenv("ADMIN_GROUPS", f"{GROUP_ADMINISTRADORES},{GROUP_GTR},{GROUP_SUPER}").split(",") if g.strip()]
 
 # Flask
 SECRET_KEY = os.getenv("SECRET_KEY", "change-this-secret-key")
