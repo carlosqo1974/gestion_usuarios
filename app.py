@@ -40,6 +40,45 @@ def login_required(f):
     return decorated
 
 
+def _user_has_group(user: dict, group_cn: str) -> bool:
+    groups = [g.lower() for g in user.get("group_cns", [])]
+    return group_cn.lower() in groups
+
+
+def _compute_permissions(user: dict) -> dict:
+    is_access_manager = _user_has_group(user, config.ACCESS_MANAGER_GROUP)
+    in_supervisores = _user_has_group(user, config.PROFILE_GROUPS["supervisores"])
+    in_gtr = _user_has_group(user, config.PROFILE_GROUPS["gtr"])
+
+    can_change_password = in_supervisores or in_gtr or is_access_manager
+    can_reset_account = in_supervisores or in_gtr or is_access_manager
+    can_change_hours = in_gtr or is_access_manager
+
+    return {
+        "is_access_manager": is_access_manager,
+        "can_change_password": can_change_password,
+        "can_reset_account": can_reset_account,
+        "can_change_hours": can_change_hours,
+    }
+
+
+def require_permission(permission_key: str):
+    def decorator(f):
+        @wraps(f)
+        def decorated(*args, **kwargs):
+            user = session.get("user")
+            if not user:
+                return jsonify({"ok": False, "error": "No autenticado"}), 401
+            perms = user.get("permissions", {})
+            if not perms.get(permission_key, False):
+                return jsonify({"ok": False, "error": "No autorizado para esta operación"}), 403
+            return f(*args, **kwargs)
+
+        return decorated
+
+    return decorator
+
+
 # ---------------------------------------------------------------------------
 # Login / Logout
 # ---------------------------------------------------------------------------
@@ -63,6 +102,7 @@ def login():
                 username, password, config.ADMIN_GROUPS
             )
             if ok:
+                user_info["permissions"] = _compute_permissions(user_info)
                 session["user"] = user_info
                 log.info("LOGIN OK — usuario=%s  IP=%s", username, ip)
                 next_url = request.args.get("next") or url_for("index")
@@ -86,7 +126,7 @@ def logout():
 @app.route("/")
 @login_required
 def index():
-    return render_template("index.html", user=session["user"])
+    return render_template("index.html", user=session["user"], profile_groups=config.PROFILE_GROUPS)
 
 
 # ---------------------------------------------------------------------------
@@ -151,6 +191,7 @@ def api_user(sam):
 # ---------------------------------------------------------------------------
 @app.route("/api/user/password", methods=["POST"])
 @login_required
+@require_permission("can_change_password")
 def api_change_password():
     data        = request.get_json(force=True)
     dn          = data.get("dn", "").strip()
@@ -175,6 +216,7 @@ def api_change_password():
 # ---------------------------------------------------------------------------
 @app.route("/api/user/logonhours", methods=["POST"])
 @login_required
+@require_permission("can_change_hours")
 def api_set_logon_hours():
     data   = request.get_json(force=True)
     dn     = data.get("dn", "").strip()
@@ -204,6 +246,7 @@ def api_set_logon_hours():
 # ---------------------------------------------------------------------------
 @app.route("/api/user/enable", methods=["POST"])
 @login_required
+@require_permission("can_reset_account")
 def api_enable():
     data   = request.get_json(force=True)
     dn     = data.get("dn", "").strip()
@@ -228,6 +271,7 @@ def api_enable():
 # ---------------------------------------------------------------------------
 @app.route("/api/user/unlock", methods=["POST"])
 @login_required
+@require_permission("can_reset_account")
 def api_unlock():
     data = request.get_json(force=True)
     dn   = data.get("dn", "").strip()
@@ -241,6 +285,67 @@ def api_unlock():
         audit("DESBLOQUEAR_CUENTA", dn, False, str(exc))
         return jsonify({"ok": False, "error": str(exc)}), 500
 
+
+# ---------------------------------------------------------------------------
+# API: Gestión de acceso por perfiles (solo Administradores)
+# ---------------------------------------------------------------------------
+@app.route("/api/access/profiles", methods=["GET"])
+@login_required
+@require_permission("is_access_manager")
+def api_access_profiles():
+    payload = {}
+    for profile, group_cn in config.PROFILE_GROUPS.items():
+        ok, data = ad.list_group_members(group_cn)
+        if not ok:
+            return jsonify({"ok": False, "error": str(data)}), 500
+        payload[profile] = {"group": group_cn, "members": data}
+    return jsonify({"ok": True, "profiles": payload})
+
+
+@app.route("/api/access/profiles/assign", methods=["POST"])
+@login_required
+@require_permission("is_access_manager")
+def api_access_assign():
+    data = request.get_json(force=True)
+    profile = (data.get("profile") or "").strip().lower()
+    sam = (data.get("sam") or "").strip()
+    if profile not in config.PROFILE_GROUPS:
+        return jsonify({"ok": False, "error": "Perfil inválido"}), 400
+    if not sam:
+        return jsonify({"ok": False, "error": "Falta sAMAccountName"}), 400
+
+    user_dn = ad.get_user_dn_by_sam(sam)
+    if not user_dn:
+        return jsonify({"ok": False, "error": f"Usuario no encontrado: {sam}"}), 404
+
+    group_cn = config.PROFILE_GROUPS[profile]
+    ok, msg = ad.add_user_to_group(user_dn, group_cn)
+    audit("PERFIL_ASIGNADO", user_dn, ok, f"perfil={profile} grupo={group_cn} msg={msg}")
+    status = 200 if ok else 500
+    return jsonify({"ok": ok, "message": msg}), status
+
+
+@app.route("/api/access/profiles/remove", methods=["POST"])
+@login_required
+@require_permission("is_access_manager")
+def api_access_remove():
+    data = request.get_json(force=True)
+    profile = (data.get("profile") or "").strip().lower()
+    sam = (data.get("sam") or "").strip()
+    if profile not in config.PROFILE_GROUPS:
+        return jsonify({"ok": False, "error": "Perfil inválido"}), 400
+    if not sam:
+        return jsonify({"ok": False, "error": "Falta sAMAccountName"}), 400
+
+    user_dn = ad.get_user_dn_by_sam(sam)
+    if not user_dn:
+        return jsonify({"ok": False, "error": f"Usuario no encontrado: {sam}"}), 404
+
+    group_cn = config.PROFILE_GROUPS[profile]
+    ok, msg = ad.remove_user_from_group(user_dn, group_cn)
+    audit("PERFIL_REMOVIDO", user_dn, ok, f"perfil={profile} grupo={group_cn} msg={msg}")
+    status = 200 if ok else 500
+    return jsonify({"ok": ok, "message": msg}), status
 
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":

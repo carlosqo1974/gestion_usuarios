@@ -147,6 +147,15 @@ class ADManager:
     def _is_secure_connection(self, conn: Connection) -> bool:
         return bool(conn.server.ssl or getattr(conn, "tls_started", False))
 
+    def _extract_group_cns(self, member_of: list) -> list[str]:
+        cns: list[str] = []
+        for g in member_of or []:
+            dn = str(g)
+            first = dn.split(",", 1)[0]
+            if first.upper().startswith("CN="):
+                cns.append(first[3:])
+        return cns
+
     def _friendly_ldap_error(self, exc: Exception) -> str:
         msg = str(exc)
         cert_error_hints = (
@@ -300,11 +309,13 @@ class ADManager:
             grupos_txt = ", ".join(required_groups) if required_groups else "(sin grupos configurados)"
             return False, f"Acceso denegado: se requiere pertenecer a uno de estos grupos: {grupos_txt}", None
 
+        group_cns = self._extract_group_cns(member_of)
         user_info = {
             "username": username,
             "displayName": str(entry.displayName) if entry.displayName else username,
             "mail": str(entry.mail) if entry.mail else "",
             "dn": str(entry.distinguishedName),
+            "group_cns": group_cns,
         }
         log.info("Autenticación CORRECTA — %s (%s)", username, user_info["displayName"])
         return True, "Autenticación correcta", user_info
@@ -465,6 +476,79 @@ class ADManager:
             return False, str(self.conn.result)
         except LDAPException as exc:
             return False, str(exc)
+
+    # ------------------------------------------------------------------
+    def get_user_dn_by_sam(self, sam: str) -> str | None:
+        self.conn.search(
+            config.AD_BASE_DN,
+            f"(&(objectClass=user)(objectCategory=person)(sAMAccountName={sam}))",
+            attributes=["distinguishedName"],
+        )
+        if not self.conn.entries:
+            return None
+        return str(self.conn.entries[0].distinguishedName)
+
+    def get_group_dn_by_cn(self, cn: str) -> str | None:
+        self.conn.search(
+            config.AD_BASE_DN,
+            f"(&(objectClass=group)(cn={cn}))",
+            attributes=["distinguishedName"],
+        )
+        if not self.conn.entries:
+            return None
+        return str(self.conn.entries[0].distinguishedName)
+
+    def add_user_to_group(self, user_dn: str, group_cn: str) -> tuple[bool, str]:
+        group_dn = self.get_group_dn_by_cn(group_cn)
+        if not group_dn:
+            return False, f"Grupo no encontrado: {group_cn}"
+        try:
+            ok = self.conn.modify(group_dn, {"member": [(MODIFY_ADD, [user_dn])]})
+            if ok:
+                return True, f"Usuario agregado a {group_cn}"
+            result = str(self.conn.result)
+            if "entryAlreadyExists" in result:
+                return True, f"El usuario ya pertenece a {group_cn}"
+            return False, result
+        except LDAPException as exc:
+            return False, str(exc)
+
+    def remove_user_from_group(self, user_dn: str, group_cn: str) -> tuple[bool, str]:
+        group_dn = self.get_group_dn_by_cn(group_cn)
+        if not group_dn:
+            return False, f"Grupo no encontrado: {group_cn}"
+        try:
+            ok = self.conn.modify(group_dn, {"member": [(MODIFY_DELETE, [user_dn])]})
+            if ok:
+                return True, f"Usuario removido de {group_cn}"
+            result = str(self.conn.result)
+            if "noSuchAttribute" in result:
+                return True, f"El usuario no pertenecía a {group_cn}"
+            return False, result
+        except LDAPException as exc:
+            return False, str(exc)
+
+    def list_group_members(self, group_cn: str) -> tuple[bool, list[dict] | str]:
+        group_dn = self.get_group_dn_by_cn(group_cn)
+        if not group_dn:
+            return False, f"Grupo no encontrado: {group_cn}"
+        self.conn.search(group_dn, "(objectClass=group)", attributes=["member"])
+        if not self.conn.entries:
+            return False, f"Grupo no encontrado: {group_cn}"
+        members = self.conn.entries[0].member.values if self.conn.entries[0].member else []
+        out = []
+        for member_dn in members:
+            self.conn.search(str(member_dn), "(objectClass=user)", attributes=["sAMAccountName", "displayName", "distinguishedName"])
+            if not self.conn.entries:
+                continue
+            e = self.conn.entries[0]
+            out.append({
+                "sAMAccountName": str(e.sAMAccountName) if e.sAMAccountName else "",
+                "displayName": str(e.displayName) if e.displayName else "",
+                "distinguishedName": str(e.distinguishedName) if e.distinguishedName else str(member_dn),
+            })
+        out.sort(key=lambda x: (x.get("displayName") or x.get("sAMAccountName") or "").lower())
+        return True, out
 
     # ------------------------------------------------------------------
     def _entry_to_dict(self, entry) -> dict:

@@ -8,6 +8,9 @@ const state = {
   dragValue: null,
 };
 
+const currentUser = window.APP_USER || {};
+const perms = currentUser.permissions || {};
+
 // ─── Bootstrap modals ────────────────────────────────────────────────────
 const pwdModal   = new bootstrap.Modal(document.getElementById("pwdModal"));
 const hoursModal = new bootstrap.Modal(document.getElementById("hoursModal"));
@@ -171,17 +174,17 @@ function renderDetail(u) {
 
     <!-- Acciones -->
     <div class="d-flex flex-wrap gap-2 mb-4">
-      <button class="btn btn-sm btn-outline-danger" id="btn-pwd">
+      ${perms.can_change_password ? `<button class="btn btn-sm btn-outline-danger" id="btn-pwd">
         <i class="bi bi-key me-1"></i>Cambiar contraseña
-      </button>
-      <button class="btn btn-sm btn-outline-primary" id="btn-hours">
+      </button>` : ""}
+      ${perms.can_change_hours ? `<button class="btn btn-sm btn-outline-primary" id="btn-hours">
         <i class="bi bi-clock me-1"></i>Editar horarios
-      </button>
-      <button class="btn btn-sm ${enabled ? "btn-outline-warning" : "btn-outline-success"}" id="btn-toggle">
+      </button>` : ""}
+      ${perms.can_reset_account ? `<button class="btn btn-sm ${enabled ? "btn-outline-warning" : "btn-outline-success"}" id="btn-toggle">
         <i class="bi bi-${enabled ? "pause-circle" : "play-circle"} me-1"></i>
         ${enabled ? "Deshabilitar" : "Habilitar"}
-      </button>
-      ${locked ? `<button class="btn btn-sm btn-outline-secondary" id="btn-unlock">
+      </button>` : ""}
+      ${(perms.can_reset_account && locked) ? `<button class="btn btn-sm btn-outline-secondary" id="btn-unlock">
         <i class="bi bi-unlock me-1"></i>Desbloquear
       </button>` : ""}
     </div>
@@ -233,10 +236,14 @@ function renderDetail(u) {
   buildHoursGrid("inline-hours-wrap", u.logon_hours_matrix, true);
 
   // Eventos de botones
-  document.getElementById("btn-pwd").addEventListener("click", () => openPwdModal(u));
-  document.getElementById("btn-hours").addEventListener("click", () => openHoursModal(u));
-  document.getElementById("btn-toggle").addEventListener("click", () => toggleUser(u));
+  const btnPwd = document.getElementById("btn-pwd");
+  const btnHours = document.getElementById("btn-hours");
+  const btnToggle = document.getElementById("btn-toggle");
   const btnUnlock = document.getElementById("btn-unlock");
+
+  if (btnPwd) btnPwd.addEventListener("click", () => openPwdModal(u));
+  if (btnHours) btnHours.addEventListener("click", () => openHoursModal(u));
+  if (btnToggle) btnToggle.addEventListener("click", () => toggleUser(u));
   if (btnUnlock) btnUnlock.addEventListener("click", () => unlockUser(u));
 }
 
@@ -332,6 +339,10 @@ function toggleCell(td) {
 
 // ─── Modal: Cambiar contraseña ─────────────────────────────────────────────
 function openPwdModal(u) {
+  if (!perms.can_change_password) {
+    toast("No autorizado para cambiar contraseñas", "danger");
+    return;
+  }
   document.getElementById("pwd-user-name").textContent =
     `Usuario: ${u.displayName || u.sAMAccountName} (${u.sAMAccountName})`;
   document.getElementById("pwd-new").value        = "";
@@ -395,6 +406,10 @@ document.getElementById("pwd-save-btn").addEventListener("click", async () => {
 
 // ─── Modal: Horarios ───────────────────────────────────────────────────────
 function openHoursModal(u) {
+  if (!perms.can_change_hours) {
+    toast("No autorizado para cambiar horarios", "danger");
+    return;
+  }
   document.getElementById("hours-user-name").textContent =
     `Usuario: ${u.displayName || u.sAMAccountName} (${u.sAMAccountName})`;
 
@@ -519,5 +534,92 @@ function showAlert(el, type, msg) {
 // ─── Botón refrescar árbol ─────────────────────────────────────────────────
 document.getElementById("tree-btn").addEventListener("click", () => loadTree());
 
+
+// ─── Gestión de acceso (solo Administradores) ─────────────────────────────
+async function loadAccessProfiles() {
+  if (!perms.is_access_manager) return;
+  const body = document.getElementById("access-members-body");
+  if (!body) return;
+  body.innerHTML = `<tr><td colspan="4" class="text-center text-muted">Cargando...</td></tr>`;
+
+  const data = await api("/api/access/profiles");
+  if (!data.ok) {
+    body.innerHTML = `<tr><td colspan="4" class="text-danger">${escHtml(data.error || "Error")}</td></tr>`;
+    return;
+  }
+
+  const rows = [];
+  for (const [profile, info] of Object.entries(data.profiles)) {
+    const members = info.members || [];
+    if (!members.length) {
+      rows.push(`<tr><td>${escHtml(profile)}</td><td colspan="2" class="text-muted">Sin miembros</td><td></td></tr>`);
+      continue;
+    }
+    members.forEach(m => {
+      rows.push(`<tr>
+        <td>${escHtml(profile)}<br><small class="text-muted">${escHtml(info.group)}</small></td>
+        <td>${escHtml(m.sAMAccountName || "")}</td>
+        <td>${escHtml(m.displayName || "")}</td>
+        <td><button class="btn btn-sm btn-outline-danger access-remove" data-profile="${escHtml(profile)}" data-sam="${escHtml(m.sAMAccountName || "")}">Quitar</button></td>
+      </tr>`);
+    });
+  }
+  body.innerHTML = rows.join("") || `<tr><td colspan="4" class="text-muted">Sin datos</td></tr>`;
+
+  document.querySelectorAll(".access-remove").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const profile = btn.dataset.profile;
+      const sam = btn.dataset.sam;
+      const res = await api("/api/access/profiles/remove", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ profile, sam }),
+      });
+      if (res.ok) {
+        toast(res.message || "Usuario removido", "success");
+        loadAccessProfiles();
+      } else {
+        toast(res.error || res.message || "Error", "danger");
+      }
+    });
+  });
+}
+
+function bindAccessEvents() {
+  if (!perms.is_access_manager) return;
+  const refresh = document.getElementById("access-refresh-btn");
+  const assign = document.getElementById("access-assign-btn");
+  const inputSam = document.getElementById("access-sam");
+  const select = document.getElementById("access-profile");
+  const modal = document.getElementById("accessModal");
+
+  if (refresh) refresh.addEventListener("click", () => loadAccessProfiles());
+  if (assign) assign.addEventListener("click", async () => {
+    const sam = (inputSam.value || "").trim();
+    const profile = (select.value || "").trim();
+    if (!sam) {
+      toast("Ingresa un usuario", "warning");
+      return;
+    }
+    const data = await api("/api/access/profiles/assign", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ profile, sam }),
+    });
+    if (data.ok) {
+      toast(data.message || "Perfil actualizado", "success");
+      inputSam.value = "";
+      loadAccessProfiles();
+    } else {
+      toast(data.error || data.message || "Error", "danger");
+    }
+  });
+
+  if (modal) {
+    modal.addEventListener("shown.bs.modal", () => loadAccessProfiles());
+  }
+}
+
 // ─── Init ─────────────────────────────────────────────────────────────────
+bindAccessEvents();
 checkConnection();

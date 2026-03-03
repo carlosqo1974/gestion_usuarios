@@ -53,6 +53,15 @@ TIMEZONE_OFFSET = int(os.getenv("TIMEZONE_OFFSET", 0))
 # Grupos AD permitidos para acceder a la aplicación (CN del grupo)
 ADMIN_GROUPS = [g.strip() for g in os.getenv("ADMIN_GROUPS", "GWINSuper,Administradores").split(",") if g.strip()]
 
+# Gestión de acceso por perfiles
+ACCESS_MANAGER_GROUP = os.getenv("ACCESS_MANAGER_GROUP", "Administradores").strip()
+PROFILE_GROUP_SUPERVISORES = os.getenv("PROFILE_GROUP_SUPERVISORES", "Supervisores").strip()
+PROFILE_GROUP_GTR = os.getenv("PROFILE_GROUP_GTR", "GTR").strip()
+PROFILE_GROUPS = {
+    "supervisores": PROFILE_GROUP_SUPERVISORES,
+    "gtr": PROFILE_GROUP_GTR,
+}
+
 # Flask
 SECRET_KEY = os.getenv("SECRET_KEY", "change-this-secret-key")
 DEBUG      = os.getenv("DEBUG", "false").lower() == "true"
