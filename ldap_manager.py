@@ -10,6 +10,7 @@ from ldap3 import (
     MODIFY_DELETE, MODIFY_ADD, Tls, AUTO_BIND_TLS_BEFORE_BIND
 )
 from ldap3.core.exceptions import LDAPException
+from ldap3.utils.conv import escape_filter_chars
 import config
 from logger import get_logger
 
@@ -489,10 +490,21 @@ class ADManager:
         return str(self.conn.entries[0].distinguishedName)
 
     def get_group_dn_by_cn(self, cn: str) -> str | None:
+        group = (cn or "").strip()
+        if not group:
+            return None
+
+        safe = escape_filter_chars(group)
+        group_filter = (
+            "(&(objectClass=group)"
+            f"(|(cn={safe})(name={safe})(sAMAccountName={safe})))"
+        )
+
         self.conn.search(
             config.AD_BASE_DN,
-            f"(&(objectClass=group)(cn={cn}))",
-            attributes=["distinguishedName"],
+            group_filter,
+            search_scope=SUBTREE,
+            attributes=["distinguishedName", "cn", "name", "sAMAccountName"],
         )
         if not self.conn.entries:
             return None
@@ -501,7 +513,7 @@ class ADManager:
     def add_user_to_group(self, user_dn: str, group_cn: str) -> tuple[bool, str]:
         group_dn = self.get_group_dn_by_cn(group_cn)
         if not group_dn:
-            return False, f"Grupo no encontrado: {group_cn}"
+            return False, f"Grupo no encontrado en AD: {group_cn}. Revisa PROFILE_GROUP_SUPERVISORES/PROFILE_GROUP_GTR en .env"
         try:
             ok = self.conn.modify(group_dn, {"member": [(MODIFY_ADD, [user_dn])]})
             if ok:
@@ -516,7 +528,7 @@ class ADManager:
     def remove_user_from_group(self, user_dn: str, group_cn: str) -> tuple[bool, str]:
         group_dn = self.get_group_dn_by_cn(group_cn)
         if not group_dn:
-            return False, f"Grupo no encontrado: {group_cn}"
+            return False, f"Grupo no encontrado en AD: {group_cn}. Revisa PROFILE_GROUP_SUPERVISORES/PROFILE_GROUP_GTR en .env"
         try:
             ok = self.conn.modify(group_dn, {"member": [(MODIFY_DELETE, [user_dn])]})
             if ok:
@@ -531,10 +543,10 @@ class ADManager:
     def list_group_members(self, group_cn: str) -> tuple[bool, list[dict] | str]:
         group_dn = self.get_group_dn_by_cn(group_cn)
         if not group_dn:
-            return False, f"Grupo no encontrado: {group_cn}"
+            return False, f"Grupo no encontrado en AD: {group_cn}. Revisa PROFILE_GROUP_SUPERVISORES/PROFILE_GROUP_GTR en .env"
         self.conn.search(group_dn, "(objectClass=group)", attributes=["member"])
         if not self.conn.entries:
-            return False, f"Grupo no encontrado: {group_cn}"
+            return False, f"Grupo no encontrado en AD: {group_cn}. Revisa PROFILE_GROUP_SUPERVISORES/PROFILE_GROUP_GTR en .env"
         members = self.conn.entries[0].member.values if self.conn.entries[0].member else []
         out = []
         for member_dn in members:
