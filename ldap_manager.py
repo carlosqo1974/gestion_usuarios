@@ -9,7 +9,7 @@ from ldap3 import (
     Server, Connection, ALL, NTLM, SUBTREE, MODIFY_REPLACE,
     MODIFY_DELETE, MODIFY_ADD, Tls, AUTO_BIND_TLS_BEFORE_BIND
 )
-from ldap3.core.exceptions import LDAPException
+from ldap3.core.exceptions import LDAPException, LDAPSocketSendError, LDAPSocketReceiveError, LDAPSessionTerminatedByServerError
 from ldap3.utils.conv import escape_filter_chars
 import config
 from logger import get_logger
@@ -212,6 +212,40 @@ class ADManager:
             self._conn.unbind()
             self._conn = None
 
+    def _is_broken_connection_error(self, exc: Exception) -> bool:
+        if isinstance(exc, (LDAPSocketSendError, LDAPSocketReceiveError, LDAPSessionTerminatedByServerError)):
+            return True
+        msg = str(exc).lower()
+        hints = (
+            "broken pipe",
+            "connection reset",
+            "connection aborted",
+            "transport endpoint",
+            "socket is not open",
+            "server closed the connection",
+        )
+        return any(h in msg for h in hints)
+
+    def _run_with_reconnect(self, operation, op_name: str):
+        try:
+            return operation()
+        except LDAPException as exc:
+            if not self._is_broken_connection_error(exc):
+                raise
+
+            log.warning("Conexión LDAP interrumpida durante %s: %s. Reintentando una vez…", op_name, exc)
+            self.disconnect()
+            ok, msg = self.connect()
+            if not ok:
+                raise RuntimeError(f"No se pudo reconectar al AD tras error de socket: {msg}")
+            return operation()
+
+    def _search(self, *args, **kwargs):
+        return self._run_with_reconnect(lambda: self.conn.search(*args, **kwargs), "search")
+
+    def _modify(self, *args, **kwargs):
+        return self._run_with_reconnect(lambda: self.conn.modify(*args, **kwargs), "modify")
+
     # ------------------------------------------------------------------
     def test_connection(self) -> tuple[bool, str]:
         try:
@@ -273,7 +307,7 @@ class ADManager:
             f"(sAMAccountName={username}))"
         )
         log.debug("Paso 2: buscando usuario en base=%s  filtro=%s", config.AD_AUTH_BASE, ldap_filter)
-        self.conn.search(
+        self._search(
             config.AD_AUTH_BASE,
             ldap_filter,
             attributes=["displayName", "memberOf", "distinguishedName", "mail",
@@ -335,7 +369,7 @@ class ADManager:
             f"(cn=*{t}*)(mail=*{t}*)(givenName=*{t}*)(sn=*{t}*)))"
         )
 
-        self.conn.search(base, ldap_filter, search_scope=SUBTREE, attributes=USER_ATTRS)
+        self._search(base, ldap_filter, search_scope=SUBTREE, attributes=USER_ATTRS)
         return [self._entry_to_dict(e) for e in self.conn.entries]
 
     # ------------------------------------------------------------------
@@ -345,7 +379,7 @@ class ADManager:
             f"(&(objectClass=user)(objectCategory=person)"
             f"(sAMAccountName={sam_account}))"
         )
-        self.conn.search(
+        self._search(
             config.AD_BASE_DN, ldap_filter,
             search_scope=SUBTREE, attributes=USER_ATTRS
         )
@@ -357,7 +391,7 @@ class ADManager:
     def get_ou_tree(self, base_dn: str | None = None) -> list[dict]:
         """Devuelve el árbol de OUs para el navegador."""
         base = base_dn or config.AD_BASE_DN
-        self.conn.search(
+        self._search(
             base,
             "(|(objectClass=organizationalUnit)(objectClass=container))",
             search_scope=SUBTREE,
@@ -389,7 +423,7 @@ class ADManager:
             # pwdLastSet=0 → AD exige cambio en el siguiente inicio de sesión
             changes["pwdLastSet"] = [(MODIFY_REPLACE, [0])]
         try:
-            result = self.conn.modify(dn, changes)
+            result = self._modify(dn, changes)
             if result:
                 suffix = " (se solicitará cambio en el próximo logon)" if must_change else ""
                 return True, f"Contraseña cambiada correctamente{suffix}"
@@ -404,7 +438,7 @@ class ADManager:
         """Establece los horarios de inicio de sesión."""
         raw = encode_logon_hours(matrix, config.TIMEZONE_OFFSET)
         try:
-            result = self.conn.modify(
+            result = self._modify(
                 dn,
                 {"logonHours": [(MODIFY_REPLACE, [raw])]},
             )
@@ -419,7 +453,7 @@ class ADManager:
         """Elimina restricciones de horario (acceso 24/7)."""
         all_on = bytes([0xFF] * 21)
         try:
-            result = self.conn.modify(
+            result = self._modify(
                 dn,
                 {"logonHours": [(MODIFY_REPLACE, [all_on])]},
             )
@@ -437,7 +471,7 @@ class ADManager:
         return self._toggle_uac(dn, enable=False)
 
     def _toggle_uac(self, dn: str, enable: bool) -> tuple[bool, str]:
-        self.conn.search(
+        self._search(
             config.AD_BASE_DN,
             f"(distinguishedName={dn})",
             attributes=["userAccountControl"],
@@ -454,7 +488,7 @@ class ADManager:
             action = "deshabilitado"
 
         try:
-            result = self.conn.modify(
+            result = self._modify(
                 dn,
                 {"userAccountControl": [(MODIFY_REPLACE, [new_uac])]},
             )
@@ -468,7 +502,7 @@ class ADManager:
     def unlock_user(self, dn: str) -> tuple[bool, str]:
         """Desbloquea una cuenta bloqueada."""
         try:
-            result = self.conn.modify(
+            result = self._modify(
                 dn,
                 {"lockoutTime": [(MODIFY_REPLACE, [0])]},
             )
@@ -480,7 +514,7 @@ class ADManager:
 
     # ------------------------------------------------------------------
     def get_user_dn_by_sam(self, sam: str) -> str | None:
-        self.conn.search(
+        self._search(
             config.AD_BASE_DN,
             f"(&(objectClass=user)(objectCategory=person)(sAMAccountName={sam}))",
             attributes=["distinguishedName"],
@@ -500,7 +534,7 @@ class ADManager:
             f"(|(cn={safe})(name={safe})(sAMAccountName={safe})))"
         )
 
-        self.conn.search(
+        self._search(
             config.AD_BASE_DN,
             group_filter,
             search_scope=SUBTREE,
@@ -515,7 +549,7 @@ class ADManager:
         if not group_dn:
             return False, f"Grupo no encontrado en AD: {group_cn}. Verifica el nombre del grupo en la configuración"
         try:
-            ok = self.conn.modify(group_dn, {"member": [(MODIFY_ADD, [user_dn])]})
+            ok = self._modify(group_dn, {"member": [(MODIFY_ADD, [user_dn])]})
             if ok:
                 return True, f"Usuario agregado a {group_cn}"
             result = str(self.conn.result)
@@ -530,7 +564,7 @@ class ADManager:
         if not group_dn:
             return False, f"Grupo no encontrado en AD: {group_cn}. Verifica el nombre del grupo en la configuración"
         try:
-            ok = self.conn.modify(group_dn, {"member": [(MODIFY_DELETE, [user_dn])]})
+            ok = self._modify(group_dn, {"member": [(MODIFY_DELETE, [user_dn])]})
             if ok:
                 return True, f"Usuario removido de {group_cn}"
             result = str(self.conn.result)
@@ -544,13 +578,13 @@ class ADManager:
         group_dn = self.get_group_dn_by_cn(group_cn)
         if not group_dn:
             return False, f"Grupo no encontrado en AD: {group_cn}. Verifica el nombre del grupo en la configuración"
-        self.conn.search(group_dn, "(objectClass=group)", attributes=["member"])
+        self._search(group_dn, "(objectClass=group)", attributes=["member"])
         if not self.conn.entries:
             return False, f"Grupo no encontrado en AD: {group_cn}. Verifica el nombre del grupo en la configuración"
         members = self.conn.entries[0].member.values if self.conn.entries[0].member else []
         out = []
         for member_dn in members:
-            self.conn.search(str(member_dn), "(objectClass=user)", attributes=["sAMAccountName", "displayName", "distinguishedName"])
+            self._search(str(member_dn), "(objectClass=user)", attributes=["sAMAccountName", "displayName", "distinguishedName"])
             if not self.conn.entries:
                 continue
             e = self.conn.entries[0]
