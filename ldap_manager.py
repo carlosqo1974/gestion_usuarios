@@ -78,9 +78,9 @@ def decode_logon_hours(raw: bytes, tz_offset: int = 0) -> list[list[bool]]:
         hour = i % 24
         matrix[day][hour] = allowed
 
-    # Aplicar desplazamiento de zona horaria
+    # Aplicar desplazamiento de zona horaria (negativo para UTC→local: local = UTC + offset)
     if tz_offset != 0:
-        matrix = _shift_logon_hours(matrix, tz_offset)
+        matrix = _shift_logon_hours(matrix, -tz_offset)
 
     return matrix
 
@@ -91,7 +91,7 @@ def encode_logon_hours(matrix: list[list[bool]], tz_offset: int = 0) -> bytes:
     Convierte de hora local a UTC antes de codificar.
     """
     if tz_offset != 0:
-        matrix = _shift_logon_hours(matrix, -tz_offset)
+        matrix = _shift_logon_hours(matrix, tz_offset)
 
     bits = []
     for day in matrix:
