@@ -111,7 +111,10 @@ def _shift_logon_hours(matrix: list[list[bool]], hours: int) -> list[list[bool]]
     flat = [matrix[d][h] for d in range(7) for h in range(24)]
     total = len(flat)
     shift = hours % total
-    flat = flat[shift:] + flat[:shift]
+    if shift:
+        # hours > 0 mueve los permisos hacia horas posteriores.
+        # Ejemplo: una franja en 11:00 UTC con offset +5 pasa a 16:00 local.
+        flat = flat[-shift:] + flat[:-shift]
     new_matrix = []
     for d in range(7):
         new_matrix.append(flat[d * 24:(d + 1) * 24])
