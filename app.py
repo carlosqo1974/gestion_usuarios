@@ -40,6 +40,40 @@ def login_required(f):
     return decorated
 
 
+def _user_has_group(user: dict, group_cn: str) -> bool:
+    groups = [g.lower() for g in user.get("group_cns", [])]
+    return group_cn.lower() in groups
+
+
+def _compute_permissions(user: dict) -> dict:
+    in_admin = _user_has_group(user, config.GROUP_ADMINISTRADORES)
+    in_gtr = _user_has_group(user, config.GROUP_GTR)
+    in_super = _user_has_group(user, config.GROUP_SUPER)
+
+    return {
+        "can_change_password": in_admin or in_gtr or in_super,
+        "can_reset_account": in_admin or in_gtr or in_super,
+        "can_change_hours": in_admin or in_gtr,
+    }
+
+
+def require_permission(permission_key: str):
+    def decorator(f):
+        @wraps(f)
+        def decorated(*args, **kwargs):
+            user = session.get("user")
+            if not user:
+                return jsonify({"ok": False, "error": "No autenticado"}), 401
+            perms = user.get("permissions", {})
+            if not perms.get(permission_key, False):
+                return jsonify({"ok": False, "error": "No autorizado para esta operación"}), 403
+            return f(*args, **kwargs)
+
+        return decorated
+
+    return decorator
+
+
 # ---------------------------------------------------------------------------
 # Login / Logout
 # ---------------------------------------------------------------------------
@@ -60,9 +94,10 @@ def login():
         else:
             log.info("LOGIN intento — usuario=%s  IP=%s", username, ip)
             ok, msg, user_info = ad.authenticate_user(
-                username, password, config.ADMIN_GROUP
+                username, password, config.ADMIN_GROUPS
             )
             if ok:
+                user_info["permissions"] = _compute_permissions(user_info)
                 session["user"] = user_info
                 log.info("LOGIN OK — usuario=%s  IP=%s", username, ip)
                 next_url = request.args.get("next") or url_for("index")
@@ -71,7 +106,7 @@ def login():
                 log.warning("LOGIN FALLO — usuario=%s  IP=%s  motivo=%s", username, ip, msg)
                 error = msg
 
-    return render_template("login.html", error=error, admin_group=config.ADMIN_GROUP)
+    return render_template("login.html", error=error, admin_groups=config.ADMIN_GROUPS)
 
 
 @app.route("/logout")
@@ -151,6 +186,7 @@ def api_user(sam):
 # ---------------------------------------------------------------------------
 @app.route("/api/user/password", methods=["POST"])
 @login_required
+@require_permission("can_change_password")
 def api_change_password():
     data        = request.get_json(force=True)
     dn          = data.get("dn", "").strip()
@@ -175,6 +211,7 @@ def api_change_password():
 # ---------------------------------------------------------------------------
 @app.route("/api/user/logonhours", methods=["POST"])
 @login_required
+@require_permission("can_change_hours")
 def api_set_logon_hours():
     data   = request.get_json(force=True)
     dn     = data.get("dn", "").strip()
@@ -204,6 +241,7 @@ def api_set_logon_hours():
 # ---------------------------------------------------------------------------
 @app.route("/api/user/enable", methods=["POST"])
 @login_required
+@require_permission("can_reset_account")
 def api_enable():
     data   = request.get_json(force=True)
     dn     = data.get("dn", "").strip()
@@ -228,6 +266,7 @@ def api_enable():
 # ---------------------------------------------------------------------------
 @app.route("/api/user/unlock", methods=["POST"])
 @login_required
+@require_permission("can_reset_account")
 def api_unlock():
     data = request.get_json(force=True)
     dn   = data.get("dn", "").strip()

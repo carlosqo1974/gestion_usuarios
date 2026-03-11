@@ -21,7 +21,7 @@
             <img src="https://contactamericas.com/assets/logo-xaubT1yS.png" alt="Contact Americas" />
           </div>
           <h5 class="fw-bold text-secondary">Gestión de Usuarios AD</h5>
-          <p class="text-muted small">Acceso restringido a miembros de <strong>{{ admin_group }}</strong></p>
+          <p class="text-muted small">Acceso restringido a miembros de <strong>{{ admin_groups | join(', ') }}</strong></p>
         </div>
 
         {% if error %}

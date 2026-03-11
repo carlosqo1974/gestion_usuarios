@@ -7,9 +7,10 @@ import struct
 from datetime import datetime, timezone, timedelta
 from ldap3 import (
     Server, Connection, ALL, NTLM, SUBTREE, MODIFY_REPLACE,
-    MODIFY_DELETE, MODIFY_ADD
+    MODIFY_DELETE, MODIFY_ADD, Tls, AUTO_BIND_TLS_BEFORE_BIND
 )
-from ldap3.core.exceptions import LDAPException
+from ldap3.core.exceptions import LDAPException, LDAPSocketSendError, LDAPSocketReceiveError, LDAPSessionTerminatedByServerError
+from ldap3.utils.conv import escape_filter_chars
 import config
 from logger import get_logger
 
@@ -129,28 +130,74 @@ class ADManager:
     def __init__(self):
         self._conn: Connection | None = None
 
+    def _build_server(self) -> Server:
+        tls_config = Tls(
+            validate=config.TLS_VALIDATE_MODE,
+            ca_certs_file=config.AD_CA_CERT_FILE or None,
+            version=config.TLS_VERSION,
+            valid_names=config.AD_TLS_VALID_NAMES or None,
+        )
+        return Server(
+            config.AD_SERVER,
+            port=config.AD_PORT,
+            use_ssl=config.AD_USE_SSL,
+            tls=tls_config,
+            get_info=ALL,
+        )
+
+    def _is_secure_connection(self, conn: Connection) -> bool:
+        return bool(conn.server.ssl or getattr(conn, "tls_started", False))
+
+    def _extract_group_cns(self, member_of: list) -> list[str]:
+        cns: list[str] = []
+        for g in member_of or []:
+            dn = str(g)
+            first = dn.split(",", 1)[0]
+            if first.upper().startswith("CN="):
+                cns.append(first[3:])
+        return cns
+
+    def _friendly_ldap_error(self, exc: Exception) -> str:
+        msg = str(exc)
+        cert_error_hints = (
+            "CERTIFICATE_VERIFY_FAILED",
+            "unable to get local issuer certificate",
+            "self signed certificate",
+        )
+        if any(h in msg for h in cert_error_hints):
+            return (
+                f"{msg}. Verifica la cadena de certificados del DC. "
+                "Opciones: configurar AD_CA_CERT_FILE con la CA corporativa, "
+                "instalar la CA en el trust store del sistema, o (solo temporalmente) "
+                "usar AD_TLS_VALIDATE=none."
+            )
+        if "doesn't match any name in" in msg:
+            return (
+                f"{msg}. El certificado del DC es válido pero el nombre no coincide. "
+                "Usa AD_SERVER con FQDN del DC (ej. DC01.contact.com) en lugar de IP, "
+                "o configura AD_TLS_VALID_NAMES con el/los nombres DNS permitidos del certificado."
+            )
+        return msg
+
     # ------------------------------------------------------------------
     def connect(self) -> tuple[bool, str]:
         log.debug("Conectando al AD: server=%s  port=%s  ssl=%s  bind_dn=%s",
                   config.AD_SERVER, config.AD_PORT, config.AD_USE_SSL, config.AD_BIND_DN)
         try:
-            server = Server(
-                config.AD_SERVER,
-                port=config.AD_PORT,
-                use_ssl=config.AD_USE_SSL,
-                get_info=ALL,
-            )
+            server = self._build_server()
             self._conn = Connection(
                 server,
                 user=config.AD_BIND_DN,
                 password=config.AD_PASSWORD,
-                auto_bind=True,
+                auto_bind=AUTO_BIND_TLS_BEFORE_BIND if (not config.AD_USE_SSL and config.AD_START_TLS) else True,
             )
+            if config.AD_START_TLS and not config.AD_USE_SSL and not self._conn.tls_started:
+                self._conn.start_tls()
             log.info("Conexión admin establecida con %s", config.AD_SERVER)
             return True, "Conexión establecida"
         except LDAPException as exc:
             log.error("Error al conectar con el AD: %s", exc)
-            return False, str(exc)
+            return False, self._friendly_ldap_error(exc)
 
     @property
     def conn(self) -> Connection:
@@ -165,6 +212,40 @@ class ADManager:
             self._conn.unbind()
             self._conn = None
 
+    def _is_broken_connection_error(self, exc: Exception) -> bool:
+        if isinstance(exc, (LDAPSocketSendError, LDAPSocketReceiveError, LDAPSessionTerminatedByServerError)):
+            return True
+        msg = str(exc).lower()
+        hints = (
+            "broken pipe",
+            "connection reset",
+            "connection aborted",
+            "transport endpoint",
+            "socket is not open",
+            "server closed the connection",
+        )
+        return any(h in msg for h in hints)
+
+    def _run_with_reconnect(self, operation, op_name: str):
+        try:
+            return operation()
+        except LDAPException as exc:
+            if not self._is_broken_connection_error(exc):
+                raise
+
+            log.warning("Conexión LDAP interrumpida durante %s: %s. Reintentando una vez…", op_name, exc)
+            self.disconnect()
+            ok, msg = self.connect()
+            if not ok:
+                raise RuntimeError(f"No se pudo reconectar al AD tras error de socket: {msg}")
+            return operation()
+
+    def _search(self, *args, **kwargs):
+        return self._run_with_reconnect(lambda: self.conn.search(*args, **kwargs), "search")
+
+    def _modify(self, *args, **kwargs):
+        return self._run_with_reconnect(lambda: self.conn.modify(*args, **kwargs), "modify")
+
     # ------------------------------------------------------------------
     def test_connection(self) -> tuple[bool, str]:
         try:
@@ -177,13 +258,13 @@ class ADManager:
 
     # ------------------------------------------------------------------
     def authenticate_user(
-        self, username: str, password: str, required_group: str
+        self, username: str, password: str, required_groups: list[str]
     ) -> tuple[bool, str, dict | None]:
         """
-        Verifica credenciales contra AD y comprueba membresía en required_group.
+        Verifica credenciales contra AD y comprueba membresía en al menos uno de required_groups.
         Devuelve (ok, mensaje, user_info | None).
         """
-        log.info("Intento de autenticación — usuario: %s  grupo_requerido: %s", username, required_group)
+        log.info("Intento de autenticación — usuario: %s  grupos_requeridos: %s", username, required_groups)
 
         # 1. Intentar bind con las credenciales del usuario
         # Probamos UPN (usuario@dominio) primero, luego NetBIOS (DOMINIO\usuario)
@@ -192,12 +273,7 @@ class ADManager:
             f"{config.AD_DOMAIN}\\{username}",
         ]
 
-        server = Server(
-            config.AD_SERVER,
-            port=config.AD_PORT,
-            use_ssl=config.AD_USE_SSL,
-            get_info=ALL,
-        )
+        server = self._build_server()
 
         bind_ok = False
         last_exc = None
@@ -205,13 +281,20 @@ class ADManager:
             log.debug("Paso 1: probando bind — %s  servidor: %s:%s  ssl=%s",
                       bind_user, config.AD_SERVER, config.AD_PORT, config.AD_USE_SSL)
             try:
-                user_conn = Connection(server, user=bind_user, password=password, auto_bind=True)
+                user_conn = Connection(
+                    server,
+                    user=bind_user,
+                    password=password,
+                    auto_bind=AUTO_BIND_TLS_BEFORE_BIND if (not config.AD_USE_SSL and config.AD_START_TLS) else True,
+                )
+                if config.AD_START_TLS and not config.AD_USE_SSL and not user_conn.tls_started:
+                    user_conn.start_tls()
                 user_conn.unbind()
                 log.debug("Paso 1: bind correcto con formato '%s'", bind_user)
                 bind_ok = True
                 break
             except LDAPException as exc:
-                log.warning("Paso 1: formato '%s' rechazado — %s", bind_user, exc)
+                log.warning("Paso 1: formato '%s' rechazado — %s", bind_user, self._friendly_ldap_error(exc))
                 last_exc = exc
 
         if not bind_ok:
@@ -224,7 +307,7 @@ class ADManager:
             f"(sAMAccountName={username}))"
         )
         log.debug("Paso 2: buscando usuario en base=%s  filtro=%s", config.AD_AUTH_BASE, ldap_filter)
-        self.conn.search(
+        self._search(
             config.AD_AUTH_BASE,
             ldap_filter,
             attributes=["displayName", "memberOf", "distinguishedName", "mail",
@@ -250,20 +333,24 @@ class ADManager:
         log.debug("Paso 3: grupos del usuario %s: %s", username,
                   [str(g) for g in member_of] if member_of else "(ninguno)")
 
-        in_group = any(
-            str(g).lower().startswith(f"cn={required_group.lower()},")
-            for g in member_of
+        required_groups = [g for g in required_groups if g]
+        in_allowed_group = any(
+            any(str(g).lower().startswith(f"cn={required.lower()},") for g in member_of)
+            for required in required_groups
         )
-        if not in_group:
-            log.warning("Paso 3 FALLO — %s no pertenece al grupo '%s'. Grupos actuales: %s",
-                        username, required_group, [str(g) for g in member_of])
-            return False, f"Acceso denegado: se requiere pertenecer al grupo {required_group}", None
+        if not in_allowed_group:
+            log.warning("Paso 3 FALLO — %s no pertenece a los grupos permitidos %s. Grupos actuales: %s",
+                        username, required_groups, [str(g) for g in member_of])
+            grupos_txt = ", ".join(required_groups) if required_groups else "(sin grupos configurados)"
+            return False, f"Acceso denegado: se requiere pertenecer a uno de estos grupos: {grupos_txt}", None
 
+        group_cns = self._extract_group_cns(member_of)
         user_info = {
             "username": username,
             "displayName": str(entry.displayName) if entry.displayName else username,
             "mail": str(entry.mail) if entry.mail else "",
             "dn": str(entry.distinguishedName),
+            "group_cns": group_cns,
         }
         log.info("Autenticación CORRECTA — %s (%s)", username, user_info["displayName"])
         return True, "Autenticación correcta", user_info
@@ -282,7 +369,7 @@ class ADManager:
             f"(cn=*{t}*)(mail=*{t}*)(givenName=*{t}*)(sn=*{t}*)))"
         )
 
-        self.conn.search(base, ldap_filter, search_scope=SUBTREE, attributes=USER_ATTRS)
+        self._search(base, ldap_filter, search_scope=SUBTREE, attributes=USER_ATTRS)
         return [self._entry_to_dict(e) for e in self.conn.entries]
 
     # ------------------------------------------------------------------
@@ -292,7 +379,7 @@ class ADManager:
             f"(&(objectClass=user)(objectCategory=person)"
             f"(sAMAccountName={sam_account}))"
         )
-        self.conn.search(
+        self._search(
             config.AD_BASE_DN, ldap_filter,
             search_scope=SUBTREE, attributes=USER_ATTRS
         )
@@ -304,7 +391,7 @@ class ADManager:
     def get_ou_tree(self, base_dn: str | None = None) -> list[dict]:
         """Devuelve el árbol de OUs para el navegador."""
         base = base_dn or config.AD_BASE_DN
-        self.conn.search(
+        self._search(
             base,
             "(|(objectClass=organizationalUnit)(objectClass=container))",
             search_scope=SUBTREE,
@@ -324,13 +411,19 @@ class ADManager:
         """Cambia la contraseña de un usuario (requiere privilegios admin).
         must_change=True pone pwdLastSet=0 para forzar cambio en el próximo logon.
         """
+        if config.AD_REQUIRE_SECURE_PASSWORD_OPS and not self._is_secure_connection(self.conn):
+            return False, (
+                "Operación rechazada: el cambio de contraseña requiere LDAPS o StartTLS "
+                "(AD_USE_SSL=true o AD_START_TLS=true)."
+            )
+
         encoded = f'"{new_password}"'.encode("utf-16-le")
         changes = {"unicodePwd": [(MODIFY_REPLACE, [encoded])]}
         if must_change:
             # pwdLastSet=0 → AD exige cambio en el siguiente inicio de sesión
             changes["pwdLastSet"] = [(MODIFY_REPLACE, [0])]
         try:
-            result = self.conn.modify(dn, changes)
+            result = self._modify(dn, changes)
             if result:
                 suffix = " (se solicitará cambio en el próximo logon)" if must_change else ""
                 return True, f"Contraseña cambiada correctamente{suffix}"
@@ -345,7 +438,7 @@ class ADManager:
         """Establece los horarios de inicio de sesión."""
         raw = encode_logon_hours(matrix, config.TIMEZONE_OFFSET)
         try:
-            result = self.conn.modify(
+            result = self._modify(
                 dn,
                 {"logonHours": [(MODIFY_REPLACE, [raw])]},
             )
@@ -360,7 +453,7 @@ class ADManager:
         """Elimina restricciones de horario (acceso 24/7)."""
         all_on = bytes([0xFF] * 21)
         try:
-            result = self.conn.modify(
+            result = self._modify(
                 dn,
                 {"logonHours": [(MODIFY_REPLACE, [all_on])]},
             )
@@ -378,7 +471,7 @@ class ADManager:
         return self._toggle_uac(dn, enable=False)
 
     def _toggle_uac(self, dn: str, enable: bool) -> tuple[bool, str]:
-        self.conn.search(
+        self._search(
             config.AD_BASE_DN,
             f"(distinguishedName={dn})",
             attributes=["userAccountControl"],
@@ -395,7 +488,7 @@ class ADManager:
             action = "deshabilitado"
 
         try:
-            result = self.conn.modify(
+            result = self._modify(
                 dn,
                 {"userAccountControl": [(MODIFY_REPLACE, [new_uac])]},
             )
@@ -409,7 +502,7 @@ class ADManager:
     def unlock_user(self, dn: str) -> tuple[bool, str]:
         """Desbloquea una cuenta bloqueada."""
         try:
-            result = self.conn.modify(
+            result = self._modify(
                 dn,
                 {"lockoutTime": [(MODIFY_REPLACE, [0])]},
             )
@@ -418,6 +511,90 @@ class ADManager:
             return False, str(self.conn.result)
         except LDAPException as exc:
             return False, str(exc)
+
+    # ------------------------------------------------------------------
+    def get_user_dn_by_sam(self, sam: str) -> str | None:
+        self._search(
+            config.AD_BASE_DN,
+            f"(&(objectClass=user)(objectCategory=person)(sAMAccountName={sam}))",
+            attributes=["distinguishedName"],
+        )
+        if not self.conn.entries:
+            return None
+        return str(self.conn.entries[0].distinguishedName)
+
+    def get_group_dn_by_cn(self, cn: str) -> str | None:
+        group = (cn or "").strip()
+        if not group:
+            return None
+
+        safe = escape_filter_chars(group)
+        group_filter = (
+            "(&(objectClass=group)"
+            f"(|(cn={safe})(name={safe})(sAMAccountName={safe})))"
+        )
+
+        self._search(
+            config.AD_BASE_DN,
+            group_filter,
+            search_scope=SUBTREE,
+            attributes=["distinguishedName", "cn", "name", "sAMAccountName"],
+        )
+        if not self.conn.entries:
+            return None
+        return str(self.conn.entries[0].distinguishedName)
+
+    def add_user_to_group(self, user_dn: str, group_cn: str) -> tuple[bool, str]:
+        group_dn = self.get_group_dn_by_cn(group_cn)
+        if not group_dn:
+            return False, f"Grupo no encontrado en AD: {group_cn}. Verifica el nombre del grupo en la configuración"
+        try:
+            ok = self._modify(group_dn, {"member": [(MODIFY_ADD, [user_dn])]})
+            if ok:
+                return True, f"Usuario agregado a {group_cn}"
+            result = str(self.conn.result)
+            if "entryAlreadyExists" in result:
+                return True, f"El usuario ya pertenece a {group_cn}"
+            return False, result
+        except LDAPException as exc:
+            return False, str(exc)
+
+    def remove_user_from_group(self, user_dn: str, group_cn: str) -> tuple[bool, str]:
+        group_dn = self.get_group_dn_by_cn(group_cn)
+        if not group_dn:
+            return False, f"Grupo no encontrado en AD: {group_cn}. Verifica el nombre del grupo en la configuración"
+        try:
+            ok = self._modify(group_dn, {"member": [(MODIFY_DELETE, [user_dn])]})
+            if ok:
+                return True, f"Usuario removido de {group_cn}"
+            result = str(self.conn.result)
+            if "noSuchAttribute" in result:
+                return True, f"El usuario no pertenecía a {group_cn}"
+            return False, result
+        except LDAPException as exc:
+            return False, str(exc)
+
+    def list_group_members(self, group_cn: str) -> tuple[bool, list[dict] | str]:
+        group_dn = self.get_group_dn_by_cn(group_cn)
+        if not group_dn:
+            return False, f"Grupo no encontrado en AD: {group_cn}. Verifica el nombre del grupo en la configuración"
+        self._search(group_dn, "(objectClass=group)", attributes=["member"])
+        if not self.conn.entries:
+            return False, f"Grupo no encontrado en AD: {group_cn}. Verifica el nombre del grupo en la configuración"
+        members = self.conn.entries[0].member.values if self.conn.entries[0].member else []
+        out = []
+        for member_dn in members:
+            self._search(str(member_dn), "(objectClass=user)", attributes=["sAMAccountName", "displayName", "distinguishedName"])
+            if not self.conn.entries:
+                continue
+            e = self.conn.entries[0]
+            out.append({
+                "sAMAccountName": str(e.sAMAccountName) if e.sAMAccountName else "",
+                "displayName": str(e.displayName) if e.displayName else "",
+                "distinguishedName": str(e.distinguishedName) if e.distinguishedName else str(member_dn),
+            })
+        out.sort(key=lambda x: (x.get("displayName") or x.get("sAMAccountName") or "").lower())
+        return True, out
 
     # ------------------------------------------------------------------
     def _entry_to_dict(self, entry) -> dict:

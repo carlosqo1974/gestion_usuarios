@@ -8,6 +8,9 @@ const state = {
   dragValue: null,
 };
 
+const currentUser = window.APP_USER || {};
+const perms = currentUser.permissions || {};
+
 // ─── Bootstrap modals ────────────────────────────────────────────────────
 const pwdModal   = new bootstrap.Modal(document.getElementById("pwdModal"));
 const hoursModal = new bootstrap.Modal(document.getElementById("hoursModal"));
@@ -171,17 +174,17 @@ function renderDetail(u) {
 
     <!-- Acciones -->
     <div class="d-flex flex-wrap gap-2 mb-4">
-      <button class="btn btn-sm btn-outline-danger" id="btn-pwd">
+      ${perms.can_change_password ? `<button class="btn btn-sm btn-outline-danger" id="btn-pwd">
         <i class="bi bi-key me-1"></i>Cambiar contraseña
-      </button>
-      <button class="btn btn-sm btn-outline-primary" id="btn-hours">
+      </button>` : ""}
+      ${perms.can_change_hours ? `<button class="btn btn-sm btn-outline-primary" id="btn-hours">
         <i class="bi bi-clock me-1"></i>Editar horarios
-      </button>
-      <button class="btn btn-sm ${enabled ? "btn-outline-warning" : "btn-outline-success"}" id="btn-toggle">
+      </button>` : ""}
+      ${perms.can_reset_account ? `<button class="btn btn-sm ${enabled ? "btn-outline-warning" : "btn-outline-success"}" id="btn-toggle">
         <i class="bi bi-${enabled ? "pause-circle" : "play-circle"} me-1"></i>
         ${enabled ? "Deshabilitar" : "Habilitar"}
-      </button>
-      ${locked ? `<button class="btn btn-sm btn-outline-secondary" id="btn-unlock">
+      </button>` : ""}
+      ${(perms.can_reset_account && locked) ? `<button class="btn btn-sm btn-outline-secondary" id="btn-unlock">
         <i class="bi bi-unlock me-1"></i>Desbloquear
       </button>` : ""}
     </div>
@@ -233,10 +236,14 @@ function renderDetail(u) {
   buildHoursGrid("inline-hours-wrap", u.logon_hours_matrix, true);
 
   // Eventos de botones
-  document.getElementById("btn-pwd").addEventListener("click", () => openPwdModal(u));
-  document.getElementById("btn-hours").addEventListener("click", () => openHoursModal(u));
-  document.getElementById("btn-toggle").addEventListener("click", () => toggleUser(u));
+  const btnPwd = document.getElementById("btn-pwd");
+  const btnHours = document.getElementById("btn-hours");
+  const btnToggle = document.getElementById("btn-toggle");
   const btnUnlock = document.getElementById("btn-unlock");
+
+  if (btnPwd) btnPwd.addEventListener("click", () => openPwdModal(u));
+  if (btnHours) btnHours.addEventListener("click", () => openHoursModal(u));
+  if (btnToggle) btnToggle.addEventListener("click", () => toggleUser(u));
   if (btnUnlock) btnUnlock.addEventListener("click", () => unlockUser(u));
 }
 
@@ -332,6 +339,10 @@ function toggleCell(td) {
 
 // ─── Modal: Cambiar contraseña ─────────────────────────────────────────────
 function openPwdModal(u) {
+  if (!perms.can_change_password) {
+    toast("No autorizado para cambiar contraseñas", "danger");
+    return;
+  }
   document.getElementById("pwd-user-name").textContent =
     `Usuario: ${u.displayName || u.sAMAccountName} (${u.sAMAccountName})`;
   document.getElementById("pwd-new").value        = "";
@@ -395,6 +406,10 @@ document.getElementById("pwd-save-btn").addEventListener("click", async () => {
 
 // ─── Modal: Horarios ───────────────────────────────────────────────────────
 function openHoursModal(u) {
+  if (!perms.can_change_hours) {
+    toast("No autorizado para cambiar horarios", "danger");
+    return;
+  }
   document.getElementById("hours-user-name").textContent =
     `Usuario: ${u.displayName || u.sAMAccountName} (${u.sAMAccountName})`;
 
@@ -518,6 +533,5 @@ function showAlert(el, type, msg) {
 
 // ─── Botón refrescar árbol ─────────────────────────────────────────────────
 document.getElementById("tree-btn").addEventListener("click", () => loadTree());
-
 // ─── Init ─────────────────────────────────────────────────────────────────
 checkConnection();
